@@ -1,0 +1,11 @@
+float32 x
+float32 y
+float32 theta
+uint8 r
+uint8 g
+uint8 b
+uint8 width
+int32 image_index # Optional. Index of the image to use (0-2). If -1 or out of range, will use random selection
+string name # Optional.  A unique name will be created and returned if this is empty
+---
+string name
