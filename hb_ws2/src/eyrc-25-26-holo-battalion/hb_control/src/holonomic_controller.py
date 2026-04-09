@@ -1,185 +1,343 @@
 #!/usr/bin/env python3
-
-'''
-This Python file runs a ROS 2 node of name holonomic_pid_controller which holds the position of a holonomic robot
-and drives it through a series of predefined goals using PID controllers on [x, y, θ].
-
-This node publishes and subscribes to the following topics:
-
-        PUBLICATIONS                               SUBSCRIPTIONS
-        /forward_velocity_controller/commands      /bot_pose
-
-Instead of defining separate variables for each PID axis, lists/dictionaries are used.
-For example: pid_params['x'], pid_params['y'], pid_params['theta'], etc.
-
-Code modularity and clarity are maintained to make tuning and extension easier.
-'''
-
-# ---------------------- Import Required Libraries ----------------------------
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray
-# import hb_interface messages
-import numpy as np
+from rclpy.executors import MultiThreadedExecutor
+from hb_interfaces.msg import BotCmd, BotCmdArray, Pose2D, Poses2D 
+from linkattacher_msgs.srv import AttachLink, DetachLink
+from rclpy.callback_groups import ReentrantCallbackGroup
+import json
 import math
 
+#Constants
+ROBOT_ID = 0
+ROBOT_MODEL_NAME = "hb_crystal"
+ARM_LINK_NAME = "arm_link_2"
+CRATE_MODEL_NAME = "crate_green_43" 
+CRATE_LINK_NAME = "box_link_43"
 
-# ---------------------- PID Controller Class --------------------------------
+D1_ZONE = [1.020, 1.410, 1.075, 1.355]
+
+TOLERANCE_POS = 0.020     #meters
+TOLERANCE_YAW = math.radians(8)  #radians
+
+MAX_LIN_VEL = 3.0         
+MAX_ANG_VEL = 1.5         
+MAX_INTEGRAL = 1.0        
+
+WHEEL_RADIUS = 0.05       #meters
+ROBOT_RADIUS_L = 0.185    #meters
+MIN_ROBOT_TO_BOX_DISTANCE = 0.130 #meters
+
+DOCK_POSE = [1.218, 0.205, math.radians(0)] #meters, meters, radians
+
+ALPHA_1 = math.radians(30)  
+ALPHA_2 = math.radians(150) 
+ALPHA_3 = math.radians(270) 
+
 class PID:
-    def __init__(self, kp, ki, kd, max_out=1.0):
+    def __init__(self, kp, ki, kd, max_out, integral_max):
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.max_out = max_out
+        self.integral_max = integral_max
         self.integral = 0.0
         self.prev_error = 0.0
 
     def compute(self, error, dt):
-#-----------------------------PID Compute Steps--------------------------------------------------------------
-        # 1. Accumulate the error over time for the Integral term
-        # 2. Compute the change in error for the Derivative term
-        # 3. Calculate the PID output:
-        # 4. Store the current error for use in the next iteration
-        # 5. Limit (clip) the output between [-max_out, +max_out] to avoid unsafe velocities
-#------------------------------------------------------------------------------------------------------------
-        return 
-    
-    
+        if dt <= 0: return 0.0
+        self.integral += error * dt
+        self.integral = max(min(self.integral, self.integral_max), -self.integral_max)
+        derivative = (error - self.prev_error) / dt
+        output = (self.kp * error) + (self.ki * self.integral) + (self.kd * derivative)
+        self.prev_error = error
+        return max(min(output, self.max_out), -self.max_out)
+
     def reset(self):
         self.integral = 0.0
         self.prev_error = 0.0
 
+class MissionState:
+    DETECT_CRATE = 0
+    NAVIGATE_TO_CRATE = 1
+    APPROACH_AND_GRIP = 2
+    WAITING_FOR_ATTACHMENT = 3
+    LIFT_AND_STABILIZE = 4
+    TRANSPORT_CRATE = 5
+    PLACE_CRATE = 6
+    WAITING_FOR_DETACHMENT = 7
+    NAVIGATE_TO_DOCK = 8
+    MISSION_COMPLETE = 9
 
-# ---------------------- Main Node Class -------------------------------------
-class HolonomicPIDController(Node):
+class PickAndPlaceRobot(Node):
     def __init__(self):
-        super().__init__('holonomic_pid_controller')  # initializing ros node
-
-        # ---------------- Robot Parameters ----------------
-        # 1. Robot ID(s)
-        # 2. Current pose of the robot:
-        #    - Updated from the /bot_pose topic in the callback function.
-        #    - Stores [x, y, θ] information for the active robot.
-        # 3. Goal tracking index
-        # 4. Timing information:
-        #    - Used to calculate the time difference (dt) between control loop iterations.
-        # 5. Threshold for goal completion:
-        #    - Defines the acceptable error tolerance for x, y, and θ.
-        #    - Example: if error < 5 units → goal considered reached.
-
-        # ---------------- Goal Definitions ----------------
-
-        # List of waypoints [(x, y, yaw_deg)]
-        self.goals = [
-            (700, 800, 0),
-            (700, 1400, 0),
-            (1500, 1400, 0),
-            (1500, 800, 0),
-            (700, 800, 0),
-        ]
-
-        #----------------DO NOT CHNAGE----------------------
-
-        # ---------------- PID Parameters ----------------
-        self.pid_params = {
-            'x': {'kp': 0.0, 'ki': 0.00, 'kd': 0.0, 'max_out': self.max_vel},
-            'y': {'kp': 0.0, 'ki': 0.00, 'kd': 0.0, 'max_out': self.max_vel},
-            'theta': {'kp': 0.0, 'ki': 0.00, 'kd': 0.0, 'max_out': self.max_vel * 2}
-        }
-
-        # Initialize PIDs
-        self.pid_x = PID(**self.pid_params['x'])
-        self.pid_y = PID(**self.pid_params['y'])
-        self.pid_theta = PID(**self.pid_params['theta'])
-
-        # ---------------- ROS 2 Publishers & Subscribers ----------------
+        super().__init__('pick_and_place_node')
+        self.cb_group = ReentrantCallbackGroup()
+    
+        self.pid_x = PID(kp=49, ki=1, kd=12.5, max_out=MAX_LIN_VEL, integral_max=MAX_INTEGRAL)
+        self.pid_y = PID(kp=49, ki=1, kd=12.5, max_out=MAX_LIN_VEL, integral_max=MAX_INTEGRAL)
+        self.pid_theta = PID(kp=0, ki=0, kd=00, max_out=MAX_ANG_VEL, integral_max=MAX_INTEGRAL)
         
-        # Write a subscriber for /bot_pose
-
-        self.publisher = self.create_publisher(
-            Float64MultiArray, '/forward_velocity_controller/commands', 10
+        self.cmd_pub = self.create_publisher(BotCmdArray, '/bot_cmd', 10)
+        self.crate_pose_sub = self.create_subscription(
+            Poses2D, '/crate_pose', self.crate_pose_callback, 10, callback_group=self.cb_group
         )
+        self.bot_pose_sub = self.create_subscription(
+            Poses2D, '/bot_pose', self.bot_pose_callback, 10, callback_group=self.cb_group
+        )
+        self.attach_cli = self.create_client(AttachLink, '/attach_link', callback_group=self.cb_group)
+        self.detach_cli = self.create_client(DetachLink, '/detach_link', callback_group=self.cb_group)
         
-        # ---------------- Timer for Control Loop ----------------
-        self.timer = self.create_timer(0.03, self.control_cb)  # ~30ms = 33 Hz
+        self.current_state = MissionState.DETECT_CRATE
+        self.crate_position = None
+        self.robot_position = DOCK_POSE.copy()
+        self.target_position = None
+        self.attach_future = None
+        self.detach_future = None
+        self.crate_attached = False
+        
+        self.prev_time = self.get_clock().now()
+        self.state_entry_time = self.get_clock().now()
+        
+        self.timer = self.create_timer(0.05, self.mission_loop, callback_group=self.cb_group)
+        self.get_logger().info('Pick and Place Node Initialized!')
 
-        self.get_logger().info(f'Holonomic PID Controller started. Goals: {self.goals}')
+    def crate_pose_callback(self, msg: Poses2D):
+        if msg.poses:
+            pose: Pose2D = msg.poses[0]
+            self.crate_position = [pose.x / 1000.0, pose.y / 1000.0, math.radians(pose.w)]
 
+    def bot_pose_callback(self, msg: Poses2D):
+        if msg.poses:
+            pose: Pose2D = msg.poses[0]
+            self.robot_position = [pose.x / 1000.0, pose.y / 1000.0, math.radians(pose.w)]
 
-    # ---------------- Subscriber Callback ----------------
-    def pose_cb(self, msg):
-        """
-        Callback function for /bot_pose topic.
-        This function is executed each time a message is received.
+    def send_bot_command(self, m1=0.0, m2=0.0, m3=0.0, base=0.0, elbow=0.0):
+        cmd = BotCmd(id=ROBOT_ID, m1=float(m1), m2=float(m2), m3=float(m3), base=float(base), elbow=float(elbow))
+        msg = BotCmdArray(cmds=[cmd])
+        self.cmd_pub.publish(msg)
 
-        Steps:
-        1. Iterate through all poses in the incoming message.
-        2.  Update self.current_pose with this robot’s pose.
-        """
+    def attach_crate_async(self):
+        if not self.attach_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error(' Attach service not available.')
+            return None
+        data_dict = {
+            "model1_name": ROBOT_MODEL_NAME,
+            "link1_name": ARM_LINK_NAME,
+            "model2_name": CRATE_MODEL_NAME,
+            "link2_name": CRATE_LINK_NAME
+        }
+        request = AttachLink.Request(data=json.dumps(data_dict))
+        self.get_logger().info(' Requesting crate attachment...')
+        return self.attach_cli.call_async(request)
 
-    # ---------------- Control Loop ----------------
-    def control_cb(self):
+    def detach_crate_async(self):
+        if not self.detach_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('Detach service not available.')
+            return None
+        data_dict = {
+            "model1_name": ROBOT_MODEL_NAME,
+            "link1_name": ARM_LINK_NAME,
+            "model2_name": CRATE_MODEL_NAME,
+            "link2_name": CRATE_LINK_NAME
+        }
+        request = DetachLink.Request(data=json.dumps(data_dict))
+        self.get_logger().info(' Requesting crate detachment...')
+        return self.detach_cli.call_async(request)
 
-        """
-        Control loop callback executed periodically by the ROS 2 timer.
+    def set_arm_position(self, base_angle, elbow_angle):
+        self.send_bot_command(m1=0.0, m2=0.0, m3=0.0, base=base_angle, elbow=elbow_angle)
 
-        Main Steps:
-        1. Check if the current pose is available; if not, exit.
-        2. Compute the time difference (dt) since the last control cycle.
-        3. Get the current robot pose (x, y, θ).
-        4. If all goals are completed → stop the robot.
-        5. Select the current goal (x, y, θ) from the goals list.
-        6. Compute errors in x, y, and θ between current pose and goal.
-        7. Use PID controllers to calculate required body velocities [vx, vy, ω].
-        8. Convert body velocities into individual wheel velocities.
-        9. Limit (clip) wheel velocities within safe bounds.
-        10. Publish the wheel velocities to the motor controller.
-        11. Check if the goal is reached:
-              - If yes → update goal index, reset PIDs, and move to the next goal.
-        """
+    def compute_wheel_velocities(self, vx, vy, omega):
+        r = WHEEL_RADIUS
+        L = ROBOT_RADIUS_L
+        
+        v1 = -vx * math.sin(ALPHA_1) + vy * math.cos(ALPHA_1) + L * omega
+        v2 = -vx * math.sin(ALPHA_2) + vy * math.cos(ALPHA_2) + L * omega
+        v3 = -vx * math.sin(ALPHA_3) + vy * math.cos(ALPHA_3) + L * omega
+        
+        w1 = v1 / r
+        w2 = v2 / r
+        w3 = v3 / r
+        return w1, w2, w3
 
+    def normalize_angle(self, angle):
+        return math.atan2(math.sin(angle), math.cos(angle))
 
-        # Time delta
-        now = self.get_clock().now()
-        dt = (now - self.last_time).nanoseconds / 1e9
-        if dt <= 0:
-            return
-        self.last_time = now
+    def reset_pid(self):
+        self.pid_x.reset()
+        self.pid_y.reset()
+        self.pid_theta.reset()
+        self.prev_time = self.get_clock().now()
 
-        # Current robot pose
+    def navigate_to_target(self, tx, ty, tw, keep_arm_up=True):
+        current_x, current_y, current_w = self.robot_position
+        current_time = self.get_clock().now()
+        dt = (current_time - self.prev_time).nanoseconds / 1e9
+        self.prev_time = current_time
+        
+        if dt < 1e-6:
+            return False
+        
+        error_x_world = tx - current_x
+        error_y_world = ty - current_y
+        distance_error = math.sqrt(error_x_world**2 + error_y_world**2)
+        error_theta_world = self.normalize_angle(tw - current_w)
+        
+        if distance_error < TOLERANCE_POS and abs(error_theta_world) < TOLERANCE_YAW:
+            self.get_logger().info(f'Target reached! Distance: {distance_error*1000:.1f}mm, Yaw error: {math.degrees(error_theta_world):.1f}°')
+            self.send_bot_command(m1=0.0, m2=0.0, m3=0.0) 
+            self.reset_pid()
+            return True
+        
+        cos_w = math.cos(current_w)
+        sin_w = math.sin(current_w)
+        error_x_robot = error_x_world * cos_w + error_y_world * sin_w
+        error_y_robot = -error_x_world * sin_w + error_y_world * cos_w
+        
+        vx_robot = self.pid_x.compute(error_x_robot, dt)
+        vy_robot = self.pid_y.compute(error_y_robot, dt)
+        wz_robot = self.pid_theta.compute(error_theta_world, dt)
+        
+        m1, m2, m3 = self.compute_wheel_velocities(vx_robot, vy_robot, wz_robot)
+        
+        base_angle = 0.0
+        elbow_angle = 0.0
+        if keep_arm_up:
+            if self.crate_attached:
+                base_angle, elbow_angle = 60.0, 60.0 
+            else:
+                base_angle, elbow_angle = 45.0, 45.0 
+        
+        self.send_bot_command(m1=m1, m2=m2, m3=m3, base=base_angle, elbow=elbow_angle)
+        return False
 
-        # If all goals are reached → stop
+    def mission_loop(self):
+        
+        if self.current_state == MissionState.DETECT_CRATE:
+            if self.crate_position is not None:
+                cx, cy, cyaw = self.crate_position
+    
+                approach_offset = 0.15 
+                approach_x = cx
+                approach_y = cy - approach_offset
+                approach_yaw = math.radians(0)
+                
+                self.target_position = [approach_x, approach_y, approach_yaw]
+                self.reset_pid()
+                self.get_logger().info(f'Navigating to approach position: X:{approach_x*1000:.1f}mm, Y:{approach_y*1000:.1f}mm')
+                self.current_state = MissionState.NAVIGATE_TO_CRATE
+            else:
+                self.send_bot_command(m1=0.0, m2=0.0, m3=0.0, base=0.0, elbow=0.0)
 
-        # Current target goal
+        elif self.current_state == MissionState.NAVIGATE_TO_CRATE:
+            tx, ty, tw = self.target_position
+            if self.navigate_to_target(tx, ty, tw, keep_arm_up=True):
+                self.current_state = MissionState.APPROACH_AND_GRIP
 
-        # Errors
+        elif self.current_state == MissionState.APPROACH_AND_GRIP:
+            self.send_bot_command(m1=0.0, m2=0.0, m3=0.0, base=91.0, elbow=90.0)
+            
+            self.attach_future = self.attach_crate_async()
+            
+            if self.attach_future is not None:
+                self.state_entry_time = self.get_clock().now()
+                self.current_state = MissionState.WAITING_FOR_ATTACHMENT
+            else:
+                self.get_logger().error("Attachment setup failed, retrying.")
+                self.current_state = MissionState.DETECT_CRATE
 
-        # PID outputs
+        elif self.current_state == MissionState.WAITING_FOR_ATTACHMENT:
+            self.send_bot_command(m1=0.0, m2=0.0, m3=0.0, base=92.0, elbow=90.0) 
+        
+            stabilization_dt = (self.get_clock().now() - self.state_entry_time).nanoseconds / 1e9
+            
+            if stabilization_dt < 1.0: 
+                return 
 
-        # Convert to wheel velocities (custom equations)
+            if self.attach_future.done():
+                result = self.attach_future.result()
+                if result and result.success:
+                    self.get_logger().info("Crate attached!")
+                    self.crate_attached = True
+                    self.current_state = MissionState.LIFT_AND_STABILIZE
+                    self.state_entry_time = self.get_clock().now()
+                else:
+                    self.get_logger().error("Attachment failed, retrying.")
+                    self.current_state = MissionState.DETECT_CRATE
 
-        # Publish wheel velocities
+        elif self.current_state == MissionState.LIFT_AND_STABILIZE:
+            self.set_arm_position(base_angle=60.0, elbow_angle=60.0)
+            stabilization_dt = (self.get_clock().now() - self.state_entry_time).nanoseconds / 1e9
+            
+            if stabilization_dt > 2.0: 
+                self.get_logger().info("Crate lifted & stabilized. Begin transport.")
+                self.reset_pid()
+                self.current_state = MissionState.TRANSPORT_CRATE
 
-        # Goal check
+        elif self.current_state == MissionState.TRANSPORT_CRATE:
+            target_x = (D1_ZONE[0] + D1_ZONE[1]) / 2.0
+            target_y = (D1_ZONE[2] + D1_ZONE[3]) / 2.0
+            target_yaw = math.radians(0) 
+            self.target_position = [target_x, target_y, target_yaw]
+            
+            if self.navigate_to_target(target_x, target_y, target_yaw, keep_arm_up=True):
+                self.get_logger().info("Reached D1 zone. Placing crate...")
+                self.state_entry_time = self.get_clock().now()
+                self.current_state = MissionState.PLACE_CRATE
 
+        elif self.current_state == MissionState.PLACE_CRATE:
+            self.set_arm_position(base_angle=92.0, elbow_angle=90.0)
+            
+            placement_delay = (self.get_clock().now() - self.state_entry_time).nanoseconds / 1e9
 
-    # ---------------- Publisher ----------------
-    def publish_wheel_velocities(self, wheel_vel):
-        # Wheel velocity array (Float64MultiArray)
-        # Order: [Left wheel speed, Right wheel speed, Rear wheel speed]
-        msg = Float64MultiArray()
-        msg.data = np.array(wheel_vel).tolist()
-        self.publisher.publish(msg)
+            if placement_delay > 1.0: 
+                self.set_arm_position(base_angle=0.0, elbow_angle=0.0)
+                
+                self.detach_future = self.detach_crate_async()
+                if self.detach_future is not None:
+                    self.current_state = MissionState.WAITING_FOR_DETACHMENT
+                else:
+                    self.get_logger().error("Detachment failed immediately.")
+                    self.current_state = MissionState.NAVIGATE_TO_DOCK
 
+        elif self.current_state == MissionState.WAITING_FOR_DETACHMENT:
+            self.set_arm_position(base_angle=90.0, elbow_angle=90.0) 
+            
+            if self.detach_future.done():
+                result = self.detach_future.result()
+                if result and result.success:
+                    self.get_logger().info("Crate detached successfully!")
+                    self.crate_attached = False
+                else:
+                    self.get_logger().error("Detachment failed.")
+                
+                self.set_arm_position(base_angle=45.0, elbow_angle=45.0)
+                self.reset_pid()
+                self.current_state = MissionState.NAVIGATE_TO_DOCK
+        
+        elif self.current_state == MissionState.NAVIGATE_TO_DOCK:
+            tx, ty, tw = DOCK_POSE
+            if self.navigate_to_target(tx, ty, tw, keep_arm_up=False): 
+                self.current_state = MissionState.MISSION_COMPLETE
 
-# ---------------------- Main Function -------------------------------------
+        elif self.current_state == MissionState.MISSION_COMPLETE:
+            self.get_logger().info("MISSION COMPLETE! ")
+            self.send_bot_command(m1=0.0, m2=0.0, m3=0.0, base=45.0, elbow=45.0)
+            self.timer.cancel() 
+
 def main(args=None):
     rclpy.init(args=args)
-    controller = HolonomicPIDController()
-    rclpy.spin(controller)
-    controller.destroy_node()
-    rclpy.shutdown()
-
+    executor = MultiThreadedExecutor()
+    robot_node = PickAndPlaceRobot()
+    executor.add_node(robot_node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        robot_node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
