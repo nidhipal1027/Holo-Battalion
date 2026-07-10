@@ -265,7 +265,7 @@ This firmware is used only in the real-world implementation and was developed du
 
 📄 Project Portfolio
 
-(Add Portfolio PDF Link)
+drive.google.com/file/d/17czBFY-3adRa97wIfVcHAVCxyTsdHKzo/view
 
 💻 GitHub Repository
 
