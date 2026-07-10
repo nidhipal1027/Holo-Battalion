@@ -1,104 +1,286 @@
-# Holo Battalion
+# Holo Battalion – Multi-Robot Warehouse Automation System
 
-## Project Overview
+Developed as part of the **e-Yantra Robotics Competition (eYRC) 2025–26**, IIT Bombay.
 
-Holo Battalion is an advanced multi-robot warehouse automation system inspired by swarm intelligence, developed by Team eYRC#1832 as part of the e-Yantra Robotics Competition (eYRC) 2025–26 at IIT Bombay.
+## Overview
 
-The system consists of three holonomic robots—Glacio, Crystal, and Frostbite—that collaboratively perform efficient crate sorting and placement operations within a constrained warehouse environment. Each robot is equipped with an articulated arm and an omnidirectional drive, enabling precise movement in all directions, including lateral motion and in-place rotation for handling crates in confined spaces.
+Holo Battalion is a ROS2-based multi-robot warehouse automation system developed to automate crate sorting and transportation inside a simulated warehouse environment.
 
----
+The system consists of three holonomic mobile robots—**Glacio**, **Crystal**, and **Frostbite**—that collaboratively transport temperature-sensitive crates to their designated storage locations.
 
-## Problem Statement
-
-The objective is to design a coordinated multi-robot system capable of autonomously performing crate picking, identification, transportation, and placement while ensuring collision-free navigation and optimal space utilization.
+The project combines **robot perception, autonomous navigation, embedded systems, and robot control** to perform coordinated pick-and-place operations.
 
 ---
 
-## Crate Classification
+# Demo
 
-Crates are identified using color-based classification:
+▶️ Gazebo Simulation
 
-* Blue
-* Red
-* Green
+https://www.youtube.com/watch?v=ffOcRU38SAU
 
-Each crate is assigned to a designated storage zone based on its color.
+▶️ Real Robot Demonstration
 
----
-
-## System Features
-
-* Multi-robot coordination
-* Swarm intelligence-based decision making
-* Holonomic drive for omnidirectional mobility
-* Autonomous navigation and path planning
-* Collision avoidance
-* Dynamic path re-planning
-* Space-efficient crate arrangement
+https://www.youtube.com/watch?v=DBNaWMGV1Pk
 
 ---
 
-## Swarm Intelligence
+# Project Architecture
 
-The system incorporates swarm intelligence principles to enable coordinated and adaptive behavior among robots, including dynamic task allocation, collision-free navigation, and efficient collaboration in shared environments.
-
----
-
-## Technologies Used
-
-* ROS 2 (Robot Operating System)  
-* Gazebo Simulation  
-* URDF (Unified Robot Description Format)  
-* Python  
-* Linux (Ubuntu 22.04)  
-* Computer Vision and Image Processing  
-* Coordinate Transformations  
-* Holonomic Drive Kinematics  
-* Path Planning and Navigation Algorithms  
-* Multi-Robot Coordination and Swarm Intelligence  
-
----
-
-## Working Mechanism
-
-1. Robots detect crates using sensors or vision systems
-2. Crates are classified based on color
-3. Optimal paths are planned for transportation
-4. Robots pick and transport crates to designated zones
-5. Crates are placed efficiently within storage areas
-6. The process continues with coordinated multi-robot operation
-
----
-
-## Objective
-
-To achieve efficient, reliable, and collision-free warehouse automation, demonstrating practical applications in logistics, industrial automation, and intelligent warehousing systems.
-
----
-
-## Team Members (Team ID: eYRC#1832)
-
-* Nidhi Pal
-* Seeya Kokam
-* Kashisa Padhy
+```
+                 Overhead Camera
+                        │
+                        ▼
+                 OpenCV Processing
+                        │
+           ArUco Detection + Homography
+                        │
+                        ▼
+         Robot & Crate Pose Estimation
+                        │
+       ROS2 Topics (/bot_pose, /crate_pose)
+                        │
+                        ▼
+               Task Allocation Logic
+                        │
+                        ▼
+            PID Controller + Navigation
+                        │
+                        ▼
+          Inverse Kinematics Calculation
+                        │
+                        ▼
+              ROS2 MQTT Communication
+                        │
+                        ▼
+                     ESP32
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+    MG995 Motors     MG90 Servo      Solenoid
+                        │
+                        ▼
+                  Pick and Place
+```
 
 ---
 
-## Competition
+# System Workflow
 
-Developed as part of the e-Yantra Robotics Competition (eYRC) 2025–26 conducted by IIT Bombay.
+1. An overhead camera captures the complete warehouse.
+
+2. OpenCV detects ArUco markers placed on robots and crates.
+
+3. Homography converts image coordinates into real-world coordinates.
+
+4. Robot and crate poses are published using ROS2 topics.
+
+5. A task allocation node assigns the nearest crate to each robot.
+
+6. PID controllers generate smooth motion commands.
+
+7. Inverse kinematics converts robot velocity into wheel velocities.
+
+8. Commands are transmitted through MQTT to the ESP32.
+
+9. ESP32 controls motors, servo motors, and solenoid to perform pick-and-place operations.
 
 ---
 
-## Future Scope
+# Key Features
 
-* Deployment in real-world warehouse environments
-* Integration with intelligent optimization systems
-* Scalability to larger multi-robot fleets
-* Enhanced perception and object tracking capabilities
+- Multi-robot warehouse automation
+- ROS2-based communication
+- Holonomic robot control
+- Autonomous waypoint navigation
+- PID-based motion control
+- ArUco marker localization
+- Homography-based coordinate transformation
+- OpenCV-based color detection
+- MQTT communication with ESP32
+- Pick-and-place mechanism
 
 ---
 
-## License
+# Technologies Used
 
-This project is intended for academic and competition purposes.
+## Robotics
+
+- ROS2 Humble
+- Gazebo
+- URDF
+
+## Programming
+
+- Python
+- Embedded C
+
+## Computer Vision
+
+- OpenCV
+- ArUco Marker Detection
+- Homography
+
+## Embedded Systems
+
+- ESP32
+- MQTT
+- PWM Control
+
+## Hardware
+
+- MG995 DC Motors
+- MG90 Servo
+- IR Sensor
+- Solenoid
+- Buck Converter
+
+---
+
+# Hardware Components
+
+- ESP32
+- 12V Li-Po Battery
+- Buck Converter
+- MG995 Motors
+- MG90 Servo
+- MOSFET Driver
+- IR Sensor
+- Solenoid
+
+---
+
+## Repository Structure
+
+```text
+Holo-Battalion/
+│
+├── hb_ws/
+│   └── src/
+│       └── eyrc-25-26-holo-battalion/
+│
+├── hb_ws2/
+│   └── src/
+│       └── eyrc-25-26-holo-battalion/
+│
+├── hardware_testing/
+│   └── eyrc-25-26-holo-battalion/
+│
+├── esp32/
+│
+├── .gitignore
+└── README.md
+```
+
+---
+
+## Repository Organization
+
+This repository follows the development workflow used during the **e-Yantra Robotics Competition (eYRC) 2025–26**.
+
+The project was developed incrementally across multiple competition tasks, with each task maintained in a dedicated Git branch.
+
+### Branches
+
+| Branch | Description |
+|---------|-------------|
+| **main** | Initial boilerplate repository provided for project development. |
+| **task1** | Initial ROS2 workspace (`hb_ws`) and Task 1 implementation. |
+| **task2a** | Task 2A implementation in simulation. |
+| **task4a** | Task 4A implementation in simulation. |
+| **task4b** | Task 4B implementation in simulation. |
+| **task5a** | Task 5A implementation in simulation. |
+| **task5b** | Task 5B implementation in simulation. |
+| **task6a** | Final simulation implementation. |
+| **real_world_task** | Real-world implementation using `hb_ws2`, hardware integration, and ESP32 firmware. |
+
+---
+
+## Workspace Organization
+
+### hb_ws
+
+Contains the ROS2 simulation workspace developed during the competition tasks.
+
+### hb_ws2
+
+Contains the ROS2 workspace used for real-world robot deployment and hardware testing.
+
+### hardware_testing
+
+Contains hardware-specific development and testing files.
+
+### esp32
+
+Contains firmware for ESP32-based robot control.
+
+This firmware is used only in the real-world implementation and was developed during the later stages of the competition (Task 4 onwards).
+
+```
+
+---
+
+# Results
+
+- Successfully completed autonomous crate sorting in simulation.
+
+- Demonstrated coordinated operation of three holonomic robots.
+
+- Successfully integrated perception, navigation, control, and embedded hardware.
+
+- Achieved Level 2 in the e-Yantra Robotics Competition.
+
+- Recognized as the Top Girls Team.
+
+---
+
+# Technical Challenges
+
+- Accurate robot localization using overhead camera
+
+- Homography calibration
+
+- PID tuning for stable navigation
+
+- Multi-robot coordination
+
+- Hardware and ROS2 communication through MQTT
+
+---
+
+# Future Improvements
+
+- Dynamic obstacle avoidance
+
+- Advanced path planning
+
+- SLAM integration
+
+- Real-time warehouse deployment
+
+- Autonomous charging station
+
+---
+
+# Project Resources
+
+📄 Project Portfolio
+
+(Add Portfolio PDF Link)
+
+💻 GitHub Repository
+
+https://github.com/nidhipal1027/Holo-Battalion
+
+---
+
+# Team
+
+Team eYRC#1832
+
+- Nidhi Pal
+- Seeya Kokam
+- Kashisa Padhy
+
+---
+
+Developed for the e-Yantra Robotics Competition (eYRC) 2025–26, IIT Bombay.
