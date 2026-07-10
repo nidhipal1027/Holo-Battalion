@@ -215,8 +215,6 @@ Contains firmware for ESP32-based robot control.
 
 This firmware is used only in the real-world implementation and was developed during the later stages of the competition (Task 4 onwards).
 
-```
-
 ---
 
 # Results
